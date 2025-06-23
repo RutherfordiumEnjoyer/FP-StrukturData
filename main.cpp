@@ -21,26 +21,26 @@ struct Book {
     int stock;
 };
 
-// Jenis permintaan: pinjam atau kembali
+// Jenis permintaan transaksi
 enum RequestType {
     BORROW,
     RETURN
 };
 
-// Struktur data permintaan transaksi
+// Struktur permintaan user
 struct Request {
     string user_id;
     string book_isbn;
     RequestType type;
 };
 
-// Jenis aksi yang terjadi pada buku
+// Jenis aksi untuk fitur undo
 enum ActionType {
     ACTION_BORROWED,
     ACTION_RETURNED
 };
 
-// Struktur data aksi (untuk undo)
+// Struktur aksi yang disimpan ke stack
 struct Action {
     string user_id;
     string book_isbn;
@@ -50,12 +50,12 @@ struct Action {
 class LibrarySystem {
 private:
     map<string, list<Book>> booksByGenre;     // Buku dikelompokkan berdasarkan genre
-    map<string, Book*> booksByIsbn;           // Akses cepat berdasarkan ISBN
-    map<string, Book*> booksByTitle;          // Akses cepat berdasarkan judul
-    queue<Request> transactionQueue;          // Antrian permintaan transaksi
-    stack<Action> actionHistory;              // Stack riwayat aksi (untuk undo)
+    map<string, Book*> booksByIsbn;           // Pointer buku berdasarkan ISBN (untuk pencarian cepat)
+    map<string, Book*> booksByTitle;          // Pointer buku berdasarkan judul (untuk pencarian cepat)
+    queue<Request> transactionQueue;          // Antrian permintaan pinjam/kembali (FIFO)
+    stack<Action> actionHistory;              // Stack riwayat aksi (untuk undo) (LIFO)
 
-    // Fungsi untuk load data buku dari file teks
+    // Fungsi untuk load data dari file database
     void loadDatabaseFromFile(const string& filename) {
         ifstream file(filename);
         if (!file.is_open()) {
@@ -64,15 +64,17 @@ private:
         }
 
         string line;
+        // Looping setiap baris dalam file
         while (getline(file, line)) {
-            if (line.empty() || line.find_first_not_of(" \t\r\n") == string::npos) {
+            // Skip baris kosong atau yang hanya berisi whitespace
+            if (line.empty() || line.find_first_not_of(" \t\r\n") == string::npos)
                 continue;
-            }
 
             stringstream ss(line);
             string isbn, title, author, genre, stock_str;
             int stock;
 
+            // Parsing data dari format CSV (comma-separated values)
             if (getline(ss, isbn, ',') &&
                 getline(ss, title, ',') &&
                 getline(ss, author, ',') &&
@@ -80,9 +82,9 @@ private:
                 getline(ss, stock_str)) {
                 
                 try {
-                    stock = stoi(stock_str);
-                } catch (const invalid_argument& e) {
-                    continue;
+                    stock = stoi(stock_str);  // Konversi string ke integer
+                } catch (...) {
+                    continue; // Skip baris jika konversi gagal
                 }
                 addBook(isbn, title, author, genre, stock);
             }
@@ -91,18 +93,20 @@ private:
     }
 
 public:
-    // Konstruktor: otomatis load data dari file
+    // Constructor: load database dari file saat object dibuat
     LibrarySystem(const string& dbFilename) {
         loadDatabaseFromFile(dbFilename);
     }
 
-    // Simpan semua data buku ke file
+    // Simpan semua buku kembali ke file
     void saveDatabaseToFile(const string& filename) {
         ofstream file(filename);
         if (!file.is_open()) {
-            cerr << "Error: Tidak dapat menyimpan perubahan ke file database: " << filename << endl;
+            cerr << "Error: Gagal menyimpan ke file: " << filename << endl;
             return;
         }
+
+        // Loop semua buku di setiap genre dan tulis ke file
         for (const auto& pair : booksByGenre) {
             for (const auto& book : pair.second) {
                 file << book.isbn << "," << book.title << "," << book.author << "," << book.genre << "," << book.stock << "\n";
@@ -111,31 +115,33 @@ public:
         file.close();
     }
 
-    // Tambah buku baru ke sistem
+    // Tambahkan buku baru ke sistem
     void addBook(const string& isbn, const string& title, const string& author, const string& genre, int stock) {
+        // Buat buku baru dan tambahkan ke list berdasarkan genre
         Book newBook = {isbn, title, author, genre, stock};
         booksByGenre[genre].push_back(newBook);
-        Book* bookPtr = &booksByGenre[genre].back(); // pointer ke buku terakhir yg ditambahkan
+
+        // Simpan pointer ke buku yang baru ditambahkan untuk pencarian cepat
+        Book* bookPtr = &booksByGenre[genre].back();
         booksByIsbn[isbn] = bookPtr;
         booksByTitle[title] = bookPtr;
     }
 
-    // Tampilkan semua buku yang tersedia
+    // Tampilkan semua buku di perpustakaan
     void displayAllBooks() {
         cout << "========================================\n";
         cout << "           DAFTAR SEMUA BUKU\n";
         cout << "========================================\n";
+
         if (booksByGenre.empty()) {
-            cout << "Perpustakaan masih kosong atau gagal memuat database.\n";
+            cout << "Perpustakaan kosong.\n";
             return;
         }
 
+        // Loop melalui setiap genre dan tampilkan buku-bukunya
         for (const auto& entry : booksByGenre) {
-            const string& genre = entry.first;
-            const list<Book>& bookList = entry.second;
-
-            cout << "\n--- Genre: " << genre << " ---\n";
-            for (const auto& book : bookList) {
+            cout << "\n--- Genre: " << entry.first << " ---\n";
+            for (const auto& book : entry.second) {
                 cout << "  Judul    : " << book.title << endl;
                 cout << "  Author   : " << book.author << endl;
                 cout << "  ISBN     : " << book.isbn << endl;
@@ -145,116 +151,117 @@ public:
         }
     }
 
-    // Cari buku berdasarkan ISBN
+    // Cari buku berdasarkan ISBN menggunakan map untuk O(1) lookup
     Book* findBookByIsbn(const string& isbn) {
         if (booksByIsbn.count(isbn)) {
-            return booksByIsbn[isbn];
+            return booksByIsbn[isbn]; // Return pointer buku
         }
         return nullptr;
     }
 
-    // Tambah permintaan pinjam buku
+    // Tambahkan permintaan peminjaman ke antrian
     void createBorrowRequest(const string& user, const string& isbn) {
         Book* book = findBookByIsbn(isbn);
         if (!book) {
-            cout << "Error: Buku dengan ISBN tersebut tidak ditemukan.\n";
+            cout << "Error: Buku tidak ditemukan.\n";
             return;
         }
         if (book->stock <= 0) {
-            cout << "Info: Stok buku sedang habis, permintaan Anda tetap dimasukkan ke antrian.\n";
+            cout << "Info: Stok habis, tetap dimasukkan ke antrian.\n";
         }
         transactionQueue.push({user, isbn, BORROW});
-        cout << "Sukses: Permintaan peminjaman buku \"" << book->title << "\" telah ditambahkan ke antrian.\n";
+        cout << "Permintaan peminjaman \"" << book->title << "\" ditambahkan.\n";
     }
 
-    // Tambah permintaan pengembalian buku
+    // Tambahkan permintaan pengembalian ke antrian
     void createReturnRequest(const string& user, const string& isbn) {
         Book* book = findBookByIsbn(isbn);
         if (!book) {
-            cout << "Error: Buku dengan ISBN tersebut tidak ditemukan.\n";
+            cout << "Error: Buku tidak ditemukan.\n";
             return;
         }
         transactionQueue.push({user, isbn, RETURN});
-        cout << "Sukses: Permintaan pengembalian buku \"" << book->title << "\" telah ditambahkan ke antrian.\n";
+        cout << "Permintaan pengembalian \"" << book->title << "\" ditambahkan.\n";
     }
 
-    // Proses satu permintaan dari antrian
+    // Proses permintaan pertama di antrian (FIFO)
     void processNextRequest() {
         if (transactionQueue.empty()) {
-            cout << "Info: Tidak ada permintaan di dalam antrian.\n";
+            cout << "Tidak ada permintaan yang menunggu.\n";
             return;
         }
 
+        // Ambil request paling depan
         Request req = transactionQueue.front();
         transactionQueue.pop();
         Book* book = findBookByIsbn(req.book_isbn);
-        if(!book) return;
+        if (!book) return;
 
-        cout << "Memproses permintaan dari User '" << req.user_id << "' untuk buku '" << book->title << "'...\n";
+        cout << "Memproses permintaan dari " << req.user_id << " untuk buku \"" << book->title << "\"...\n";
 
         if (req.type == BORROW) {
             if (book->stock > 0) {
                 book->stock--;
+                // Simpan aksi ke history untuk undo
                 actionHistory.push({req.user_id, req.book_isbn, ACTION_BORROWED});
-                cout << "Status: SUKSES. Buku berhasil dipinjam. Sisa stok: " << book->stock << "\n";
+                cout << "Dipinjam. Sisa stok: " << book->stock << endl;
             } else {
-                cout << "Status: GAGAL. Stok buku habis saat permintaan diproses.\n";
+                cout << "Stok habis saat diproses.\n";
             }
         } else {
             book->stock++;
+            // Simpan aksi ke history untuk undo
             actionHistory.push({req.user_id, req.book_isbn, ACTION_RETURNED});
-            cout << "Status: SUKSES. Buku berhasil dikembalikan. Stok sekarang: " << book->stock << "\n";
+            cout << "Dikembalikan. Stok sekarang: " << book->stock << endl;
         }
     }
 
-    // Batalkan aksi terakhir (undo)
+    // Undo aksi terakhir (LIFO)
     void undoLastAction() {
         if (actionHistory.empty()) {
-            cout << "Info: Tidak ada aksi yang bisa di-undo.\n";
+            cout << "Tidak ada aksi untuk dibatalkan.\n";
             return;
         }
 
-        Action lastAction = actionHistory.top();
+        // Ambil aksi teratas dari stack
+        Action last = actionHistory.top();
         actionHistory.pop();
-        Book* book = findBookByIsbn(lastAction.book_isbn);
-        if(!book) return;
+        Book* book = findBookByIsbn(last.book_isbn);
+        if (!book) return;
 
-        cout << "Membatalkan aksi terakhir untuk buku '" << book->title << "'...\n";
-
-        if (lastAction.type == ACTION_BORROWED) {
+        cout << "Undo aksi pada buku \"" << book->title << "\"...\n";
+        if (last.type == ACTION_BORROWED) {
+            // Kembalikan stok yang dikurangi sebelumnya
             book->stock++;
-            cout << "Status: SUKSES. Peminjaman dibatalkan. Stok sekarang: " << book->stock << "\n";
+            cout << "Peminjaman dibatalkan. Stok: " << book->stock << endl;
         } else {
+            // Kurangi stok yang ditambah sebelumnya
             book->stock--;
-            cout << "Status: SUKSES. Pengembalian dibatalkan. Stok sekarang: " << book->stock << "\n";
+            cout << "Pengembalian dibatalkan. Stok: " << book->stock << endl;
         }
     }
 
-    // Rekomendasi buku berdasarkan genre buku yang disukai
+    // Berikan rekomendasi buku berdasarkan genre buku yang diberikan
     void getRecommendations(const string& isbn) {
-        Book* sourceBook = findBookByIsbn(isbn);
-        if (!sourceBook) {
-            cout << "Error: Buku dengan ISBN tersebut tidak ditemukan.\n";
+        Book* source = findBookByIsbn(isbn);
+        if (!source) {
+            cout << "Buku tidak ditemukan.\n";
             return;
         }
 
-        cout << "\n========================================\n";
-        cout << "   REKOMENDASI BUKU SERUPA\n";
-        cout << "Berdasarkan buku: \"" << sourceBook->title << "\"\n";
-        cout << "Genre: " << sourceBook->genre << "\n";
-        cout << "========================================\n";
+        cout << "\n=== Rekomendasi Buku Genre \"" << source->genre << "\" ===\n";
 
         int count = 0;
-        const auto& bookList = booksByGenre.at(sourceBook->genre);
-        for (const auto& book : bookList) {
-            if (book.isbn != sourceBook->isbn && book.stock > 0) {
+        // Loop semua buku dalam genre yang sama kecuali buku itu sendiri
+        for (const auto& book : booksByGenre[source->genre]) {
+            if (book.isbn != source->isbn && book.stock > 0) {
                 cout << "  - " << book.title << " oleh " << book.author << endl;
                 count++;
             }
         }
 
         if (count == 0) {
-            cout << "Tidak ada buku lain yang tersedia di genre ini saat ini.\n";
+            cout << "Tidak ada rekomendasi saat ini.\n";
         }
     }
 };
@@ -274,7 +281,7 @@ void displayMenu() {
     cout << "Pilih opsi: ";
 }
 
-// Bersihkan buffer input setelah kesalahan input
+// Bersihkan input buffer saat cin error
 void clearInputBuffer() {
     cin.ignore(numeric_limits<streamsize>::max(), '\n');
 }
@@ -289,8 +296,9 @@ int main() {
         displayMenu();
         cin >> choice;
 
+        // Handle input error
         if (cin.fail()) {
-            cout << "Error: Input tidak valid. Harap masukkan angka.\n";
+            cout << "Input tidak valid.\n";
             cin.clear();
             clearInputBuffer();
             choice = -1;
@@ -304,33 +312,28 @@ int main() {
                 library.displayAllBooks();
                 break;
             case 2:
-                cout << "Masukkan ISBN buku yang dicari: ";
+                cout << "Masukkan ISBN: ";
                 getline(cin, isbn);
                 {
                     Book* book = library.findBookByIsbn(isbn);
                     if (book) {
-                        cout << "\n--- Buku Ditemukan ---\n";
-                        cout << "  Judul    : " << book->title << endl;
-                        cout << "  Author   : " << book->author << endl;
-                        cout << "  ISBN     : " << book->isbn << endl;
-                        cout << "  Genre    : " << book->genre << endl;
-                        cout << "  Stok     : " << book->stock << endl;
+                        cout << "Ditemukan: " << book->title << " oleh " << book->author << ", stok: " << book->stock << endl;
                     } else {
-                        cout << "Buku dengan ISBN '" << isbn << "' tidak ditemukan.\n";
+                        cout << "Buku tidak ditemukan.\n";
                     }
                 }
                 break;
             case 3:
-                cout << "Masukkan ID User Anda: ";
+                cout << "Masukkan ID User: ";
                 getline(cin, user);
-                cout << "Masukkan ISBN buku yang akan dipinjam: ";
+                cout << "Masukkan ISBN buku: ";
                 getline(cin, isbn);
                 library.createBorrowRequest(user, isbn);
                 break;
             case 4:
-                cout << "Masukkan ID User Anda: ";
+                cout << "Masukkan ID User: ";
                 getline(cin, user);
-                cout << "Masukkan ISBN buku yang akan dikembalikan: ";
+                cout << "Masukkan ISBN buku: ";
                 getline(cin, isbn);
                 library.createReturnRequest(user, isbn);
                 break;
@@ -341,17 +344,17 @@ int main() {
                 library.undoLastAction();
                 break;
             case 7:
-                cout << "Masukkan ISBN buku yang Anda suka untuk mendapatkan rekomendasi: ";
+                cout << "Masukkan ISBN buku yang Anda suka: ";
                 getline(cin, isbn);
                 library.getRecommendations(isbn);
                 break;
             case 0:
-                cout << "Menyimpan perubahan ke database...\n";
+                cout << "Menyimpan data...\n";
                 library.saveDatabaseToFile(dbFilename);
-                cout << "Terima kasih telah menggunakan Strukdat Library System. Sampai jumpa!\n";
+                cout << "Sampai jumpa!\n";
                 break;
             default:
-                cout << "Error: Pilihan tidak valid. Silakan coba lagi.\n";
+                cout << "Pilihan tidak valid.\n";
         }
     } while (choice != 0);
 
