@@ -184,7 +184,7 @@ public:
         cout << "Permintaan pengembalian \"" << book->title << "\" ditambahkan.\n";
     }
 
-    // Proses permintaan pertama di antrian (FIFO)
+    // Proses permintaan pertama di antrian (FIFO) : 2
     void processNextRequest() {
         if (transactionQueue.empty()) {
             cout << "Tidak ada permintaan yang menunggu.\n";
